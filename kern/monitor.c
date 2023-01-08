@@ -24,6 +24,7 @@ struct Command {
 static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
+	{ "backtrace", "Display a stack backtrace", mon_backtrace },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -54,10 +55,61 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
 	return 0;
 }
 
+/*********************
+ * Run gdb you can figure out the stack frame layout.
+ * 
+ * 1. when entering the caller function, CPU minuses 20 bytes from esp. These space is used to store the arguments.
+ * 2. `call` will automatically push the return address to the stack.
+ * 3. when entering the callee function, CPU pushes caller's %ebp to the stack.
+ * 4. Now, %ebp is updated by assigning current %esp. 
+ * 
+ * Thus, the stack frame of a function looks like this:
+ * 
+ * +-----------------+
+ * | 4 bytes (arg 5) |
+ * +-----------------+
+ * | 4 bytes (arg 4) |
+ * +-----------------+
+ * | 4 bytes (arg 3) |
+ * +-----------------+
+ * | 4 bytes (arg 2) |
+ * +-----------------+
+ * | 4 bytes (arg 1) |
+ * +-----------------+
+ * | 4 bytes (EIP)   |
+ * +-----------------+
+ * | 4 bytes (EBP)   | (Caller's)
+ * +-----------------+ <---------- %esp
+ * 
+ * We trace from %esp back to the caller's %ebp, and then trace from the caller's %ebp to the caller's caller's %ebp, and so on, until 0 is reached (which is defined in entry.S).
+ */
+
 int
 mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 {
 	// Your code here.
+	struct Eipdebuginfo info;
+	uint32_t ebp = read_ebp();
+	int i, ret;
+
+	cprintf("Stack backtrace:\n");
+	while (ebp != 0) {
+		uint32_t eip = *((uint32_t *)ebp + 1);
+		cprintf("  ebp %08x  eip %08x  args", ebp, eip);
+		for (i = 2; i < 7; i++) {
+			cprintf(" %08x", *((uint32_t *)ebp + i));
+		}
+		cprintf("\n");
+
+		ret = debuginfo_eip(eip, &info);
+		if (ret) {
+			return ret;
+		}
+		cprintf("         %s:%d: %.*s+%d\n", info.eip_file, info.eip_line, info.eip_fn_namelen, info.eip_fn_name, eip - info.eip_fn_addr);
+
+		ebp = *((uint32_t *)ebp);
+	}
+
 	return 0;
 }
 
