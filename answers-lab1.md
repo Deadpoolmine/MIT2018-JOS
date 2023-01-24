@@ -101,4 +101,4 @@ bootstack:
 	.globl		bootstacktop   
 ```
 
-(4) The stack pointer is initialized to point to the bottom of the stack.
+(4) The stack pointer is initialized to point to the bottom (or top, since the stack is grown down) of the stack.

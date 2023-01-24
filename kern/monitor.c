@@ -10,9 +10,11 @@
 #include <kern/console.h>
 #include <kern/monitor.h>
 #include <kern/kdebug.h>
+#include <kern/pmap.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
 
+extern pde_t *kern_pgdir;
 
 struct Command {
 	const char *name;
@@ -25,6 +27,9 @@ static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
 	{ "backtrace", "Display a stack backtrace", mon_backtrace },
+	{ "showmappings", "Display the page mappings", mon_showmappings },
+	{ "setperm", "Set the permissions of a page", mon_setperm },
+	{ "dump", "Dump the contents of the given memeory range (either PA or VA)", mon_dump },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -113,7 +118,99 @@ mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 	return 0;
 }
 
+static pde_t *
+get_cur_pgdir(int print)
+{
+	uint32_t cr3 = rcr3();
+	physaddr_t pgdir_pa = cr3;
+	pde_t *pgdir = (pde_t *)KADDR(pgdir_pa);
+	char hints[100] = {0};
+	memset(hints, 0, sizeof(hints));
+	if (print) {
+		if (pgdir_pa == PADDR(kern_pgdir))
+			strcat(hints, "kernel");
+		else
+			strcat(hints, "unknown");
+		cprintf("Current Page Directory: %08p (%s)\n", pgdir_pa, hints);
+	}
+	return pgdir;
+}
 
+int
+mon_showmappings(int argc, char **argv, struct Trapframe *tf)
+{
+	pde_t *pgdir = get_cur_pgdir(1);
+	void *va, *va_start, *va_end;
+	
+	if (argc != 3)
+		return -1;
+	
+	va_start = (void *) strtol(argv[1], NULL, 16);
+	va_end = (void *) strtol(argv[2], NULL, 16);
+	
+	for (va = va_start; va <= va_end; va += PGSIZE) {
+		pte_t *pte = pgdir_walk(pgdir, va, 0);
+		if (pte == NULL) {
+			cprintf("    va %08p: not mapped \n", va);
+		} else {
+			cprintf("    va %08x: pte %08p, pa %08p\n", va,* pte, PTE_ADDR(*pte));
+		}
+	}
+	return 0;	
+}
+
+int
+mon_setperm(int argc, char **argv, struct Trapframe *tf)
+{
+	pde_t *pgdir = get_cur_pgdir(1);
+	void *va;
+	int perm;
+	if (argc != 3)
+		return -1;
+	
+	va = (void *)strtol(argv[1], NULL, 16);
+	perm = strtol(argv[2], NULL, 16);
+	
+	pte_t *pte = pgdir_walk(pgdir, va, 0);
+	if (pte == NULL) {
+		cprintf("    va %08p: not mapped \n", va);
+	} else {
+		cprintf("    before set: va %08p: pte %08p, pa %08p\n", va, *pte, PTE_ADDR(*pte));
+		*pte = PTE_ADDR(*pte) | perm;
+		cprintf("    after  set: va %08p: pte %08p, pa %08p\n", va, *pte, PTE_ADDR(*pte));
+	}
+	return 0;
+}
+
+/* dump va 0xF0000000 0xF0000000 */
+int
+mon_dump(int argc, char **argv, struct Trapframe *tf)
+{
+	pde_t *pgdir = get_cur_pgdir(1);
+	char *type;
+	void *addr, *addr_start, *addr_end;
+	
+	if (argc != 4)
+		return -1;
+	
+	type = argv[1];
+	addr_start = (void *) strtol(argv[2], NULL, 16);
+	addr_end = (void *) strtol(argv[3], NULL, 16);
+
+	if (memcmp(type, "va", 2) == 0) {
+		for (addr = addr_start; addr <= addr_end; addr += 4) {
+			cprintf("    va %08p: %02x %02x %02x %02x\n", addr, *((uint8_t *)addr), *((uint8_t *)addr + 1), *((uint8_t *)addr + 2), *((uint8_t *)addr + 3));
+		}
+	} else if (memcmp(type, "pa", 2) == 0) {
+		for (addr = addr_start; addr <= addr_end; addr += 4) {
+			cprintf("    pa %08p: %02x %02x %02x %02x\n", addr, *((uint8_t *)KADDR((physaddr_t)addr)), *((uint8_t *)KADDR((physaddr_t)addr) + 1), *((uint8_t *)KADDR((physaddr_t)addr) + 2), *((uint8_t *)KADDR((physaddr_t)addr) + 3));
+		}
+	} else {
+		return -1;
+	}
+
+	return 0;
+}
 
 /***** Kernel monitor command interpreter *****/
 
